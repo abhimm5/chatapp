@@ -17,7 +17,7 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "https://peppy-concha-fb9d17.netlify.app",
+    origin: "openchatting.netlify.app",
     methods: ["GET", "POST"],
     credentials: true
   }
@@ -907,6 +907,6 @@ setInterval(async () => {
 
 // Start Server
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => console.log("Server is running on https://chatapp-8flq.onrender.com"));
+server.listen(PORT, () => console.log("Server is running on openchatting.netlify.app"));
 
 

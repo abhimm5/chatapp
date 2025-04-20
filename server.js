@@ -17,10 +17,12 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "https://chatapp-8flq.onrender.com", // allow React frontend
-    methods: ["GET", "POST"]
+    origin: "https://peppy-concha-fb9d17.netlify.app",
+    methods: ["GET", "POST"],
+    credentials: true
   }
 });
+
 
 
 

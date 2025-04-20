@@ -10,6 +10,7 @@ const fs = require("fs");
 const rateLimit = require("express-rate-limit");
 const cors = require("cors");
 const { Server } = require("socket.io");
+const mongoURI = process.env.MONGO_URI;
 
 const app = express();
 
@@ -22,6 +23,10 @@ const io = new Server(server, {
 });
 
 
+
+
+
+
 // Serve static files (e.g., HTML, CSS, JS) from the 'public' folder
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json({ limit: "10mb" }));
@@ -30,11 +35,12 @@ app.use(cors()); // general CORS for REST/API calls
 
 
 // MongoDB connection setup
-mongoose.connect("mongodb://127.0.0.1:27017/chatDB")
-  .then(() => console.log("✅ MongoDB Connected Successfully!"))
-  .catch((err) => console.log("❌ MongoDB Connection Error:", err));
-
-
+mongoose.connect(mongoURI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+})
+.then(() => console.log("MongoDB connected ✅"))
+.catch(err => console.error("MongoDB connection error ❌", err));
 
 
 

@@ -17,7 +17,7 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "openchatting.netlify.app",
+    origin: "https://openchatting.netlify.app",
     methods: ["GET", "POST"],
     credentials: true
   }
@@ -33,7 +33,11 @@ const io = new Server(server, {
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ limit: "10mb", extended: true }));
-app.use(cors()); // general CORS for REST/API calls
+app.use(cors({
+  origin: "https://openchatting.netlify.app",
+  credentials: true
+}));
+ // general CORS for REST/API calls
 
 app.get("/api/something", (req, res) => {
   res.json({ message: "✅ Successfully hit backend API!" });

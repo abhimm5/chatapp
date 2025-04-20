@@ -33,6 +33,10 @@ app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ limit: "10mb", extended: true }));
 app.use(cors()); // general CORS for REST/API calls
 
+app.get("/api/something", (req, res) => {
+  res.json({ message: "✅ Successfully hit backend API!" });
+});
+
 
 // MongoDB connection setup
 mongoose.connect(mongoURI)

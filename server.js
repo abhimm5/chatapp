@@ -17,7 +17,7 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "http://192.168.252.109:53309", // allow React frontend
+    origin: "https://chatapp-8flq.onrender.com", // allow React frontend
     methods: ["GET", "POST"]
   }
 });
@@ -905,6 +905,6 @@ setInterval(async () => {
 
 // Start Server
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => console.log("Server is running on http://localhost:5000"));
+server.listen(PORT, () => console.log("Server is running on https://chatapp-8flq.onrender.com"));
 
 

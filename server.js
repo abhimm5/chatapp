@@ -93,7 +93,6 @@ function generateRandomString(length) {
 
 
 
-
 // Handle user connection
 io.on("connection", (socket) => {
  // console.log("New client connected", socket.id);
@@ -165,22 +164,24 @@ app.post("/uploadAvatar", uploadLimiter, upload.single("avatar"), async (req, re
 
 //getAllUsers()
 
-  // When a user sets their username
+// When a user sets their username
 socket.on("setUser", async (username, chatLimit, roomName, profilePicture) => {
   try {
     console.log("🔎 Checking if user exists ======>", username);
 
-    // ✅ First, check if the user is in memory (based on username)
-    const user = findUserByUsername(memoryUsers, username);
+    // ✅ Check if user exists in memory (based on username or socketID)
+    let user = memoryUsers.get(username);  // Look for the user by username in memory
 
+    // If the user exists, we update them in memory and DB, otherwise, we add them
     if (user) {
-      // ✅ Update in-memory
+      console.log("User found, updating in memory...");
+      // ✅ Update the in-memory user data (ensure you are using username as key)
       user.socketID = socket.id;
       user.status = "online";
       user.room = roomName;
       user.profilePic = profilePicture || user.profilePic;
 
-      // ✅ Also update in MongoDB
+      // ✅ Also update the user in MongoDB
       await User.updateOne(
         { username },
         {
@@ -193,8 +194,10 @@ socket.on("setUser", async (username, chatLimit, roomName, profilePicture) => {
         }
       );
       console.log(`🔄 Updated existing user ${username} in memory and MongoDB.`);
+
     } else {
-      // ✅ New user — build user object
+      // ✅ New user, create new entry
+      console.log("New user, adding to memory...");
       const newUser = {
         username,
         socketID: socket.id,
@@ -204,21 +207,47 @@ socket.on("setUser", async (username, chatLimit, roomName, profilePicture) => {
         profilePic: profilePicture || "/avatars/default_avatar.png",
       };
 
-      // ✅ Save to in-memory (use username as key for quick lookup if possible)
-      memoryUsers.set(socket.id, newUser);
+      // ✅ If user already exists, remove old entry first (to avoid duplicates)
+      if (memoryUsers.has(username)) {
+        memoryUsers.delete(username); // Remove the old entry if exists
+        console.log(`Old user data for ${username} removed from memory.`);
+      }
+
+      // ✅ Add the new user to memory (use username as the key for quick lookup)
+      memoryUsers.set(username, newUser); // Store by username as the key
 
       // ✅ Save to MongoDB
       await User.create(newUser);
-
       console.log(`✅ New user ${username} added to memory and MongoDB.`);
     }
 
     // ✅ Optional: console log memory state
-    console.log("🧠 Memory Users =>", Array.from(memoryUsers.values()));
+     console.log("🧠 Memory Users =>", Array.from(memoryUsers.values()));
+
   } catch (error) {
     console.error("❌ Error in setUser:", error);
   }
 });
+
+// Handle user disconnect to clear memory
+socket.on('disconnect', () => {
+  try {
+    const user = memoryUsers.get(socket.id);
+    if (user) {
+      // Before disconnecting, remove the user from memory using their username
+      memoryUsers.delete(user.username);
+      console.log(`User ${user.username} removed from memory on disconnect.`);
+    }
+  } catch (error) {
+    console.error("❌ Error during disconnect:", error);
+  }
+});
+
+
+
+
+
+
 
 
 
@@ -832,22 +861,37 @@ socket.on("sendMessage", async (data) => {
 
 
 
-
-
 // Event listener for "dataClean" event
 socket.on("dataClean", async () => {
   try {
-    // Clear all users
+    // Clear all users from the database
     await User.deleteMany({});
     console.log("All users deleted!");
 
-    // Clear all rooms
+    // Clear all rooms from the database
     await Room.deleteMany({});
     console.log("All rooms deleted!");
+
+    // Clear all users from memory
+    memoryUsers.clear();
+    console.log("All users in memory cleared!");
+
+    // Clear all rooms from memory
+    memoryRooms.clear();
+    console.log("All rooms in memory cleared!");
+
+    // Optionally, if you are using local storage to save data on the client, you can also clear it here
+    // For example, if you're storing `memoryUsers` or other data in the localStorage:
+    // localStorage.clear();
+    console.log("Local storage cleared!");  // Uncomment this if you want to clear it
+
   } catch (error) {
     console.error("Error deleting data:", error);
   }
 });
+
+
+
 
 
   // Handle Disconnection

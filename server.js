@@ -12,6 +12,11 @@ const cors = require("cors");
 const { Server } = require("socket.io");
 const mongoURI = process.env.MONGO_URI;
 
+// server.js - top
+
+const memoryUsers = new Map(); // socket.id → user object
+
+const memoryRooms = new Map(); // roomName → { users: Set of socket.ids or usernames, ... }
 const app = express();
 
 const server = http.createServer(app);
@@ -93,8 +98,14 @@ function generateRandomString(length) {
 io.on("connection", (socket) => {
  // console.log("New client connected", socket.id);
 
-
-
+function findUserByUsername(memoryUsers, username) {
+  for (const [_, value] of memoryUsers) {
+    if (value.username === username) {
+      return value;  // Return the user as soon as it's found
+    }
+  }
+  return null;  // Return null if no user is found
+}
 
 
 
@@ -130,9 +141,12 @@ app.post("/uploadAvatar", uploadLimiter, upload.single("avatar"), async (req, re
         const filePath = `/avatars/${path.basename(outputPath)}`;
         
 
-        const user = await User.findOne({ username });
+
+        // ✅ First, check if the user is in memory (based on username)
+    const user = findUserByUsername(memoryUsers, username);
 
         if(user){
+            user.profilePic = profilePicture || user.profilePic;
             await User.findOneAndUpdate({ username }, { profilePic: filePath });
         } else {
            console.log("user not found profile picture cant be uploaded")
@@ -153,100 +167,148 @@ app.post("/uploadAvatar", uploadLimiter, upload.single("avatar"), async (req, re
 
   // When a user sets their username
 socket.on("setUser", async (username, chatLimit, roomName, profilePicture) => {
-    try {
-        console.log("🔎 Checking if user exists ======>", username);
-        
-        let user = await User.findOne({ username });
+  try {
+    console.log("🔎 Checking if user exists ======>", username);
 
-        if (user) {
-            await User.updateOne(
-                { username },
-                { 
-                    $set: { 
-                        socketID: socket.id, 
-                        status: "online", 
-                        room: roomName, 
-                        profilePic: profilePicture || user.profilePic  // ✅ Use correct profilePic
-                    } 
-                }
-            );
-            console.log(`🔄 Updated user ${username} with new socket ID.`);
-        } else {
-            user = new User({ 
-                username, 
-                socketID: socket.id, 
-                status: "online", 
-                chatLimit:chatLimit, 
-                room: roomName, 
-                profilePic: profilePicture || "/avatars/default_avatar.png" // ✅ Default avatar
-            });
-            await user.save();
-            console.log(`✅ New user ${username} saved.`);
-            console.log(`✅ New user ${user} saved.`);
+    // ✅ First, check if the user is in memory (based on username)
+    const user = findUserByUsername(memoryUsers, username);
+
+    if (user) {
+      // ✅ Update in-memory
+      user.socketID = socket.id;
+      user.status = "online";
+      user.room = roomName;
+      user.profilePic = profilePicture || user.profilePic;
+
+      // ✅ Also update in MongoDB
+      await User.updateOne(
+        { username },
+        {
+          $set: {
+            socketID: socket.id,
+            status: "online",
+            room: roomName,
+            profilePic: user.profilePic
+          }
         }
-    } catch (error) {
-        console.error("Error saving user:", error);
+      );
+      console.log(`🔄 Updated existing user ${username} in memory and MongoDB.`);
+    } else {
+      // ✅ New user — build user object
+      const newUser = {
+        username,
+        socketID: socket.id,
+        status: "online",
+        chatLimit,
+        room: roomName,
+        profilePic: profilePicture || "/avatars/default_avatar.png",
+      };
+
+      // ✅ Save to in-memory (use username as key for quick lookup if possible)
+      memoryUsers.set(socket.id, newUser);
+
+      // ✅ Save to MongoDB
+      await User.create(newUser);
+
+      console.log(`✅ New user ${username} added to memory and MongoDB.`);
     }
+
+    // ✅ Optional: console log memory state
+    console.log("🧠 Memory Users =>", Array.from(memoryUsers.values()));
+  } catch (error) {
+    console.error("❌ Error in setUser:", error);
+  }
 });
 
 
 
 socket.on("sendIntroMessage", async (username, roomName) => {
   if (roomName) {
-    
-    console.log(username, "has joined")
-    console.log(getAllRoom(), "present room status")
+    console.log(username, "has joined");
+    console.log(getAllRoom(), "present room status");
 
-    // Find the user in the database
-    let user = await User.findOne({ username });
+    // Check if the user is in memory (O(1) lookup)
+    let user = memoryUsers.get(username);
 
-    // Join the room
+    if (!user) {
+      // If not found in memory, fetch the user from the database (O(1) to check memory)
+      user = await User.findOne({ username });
+
+      if (user) {
+        const newUser = {
+          username,
+          socketID: socket.id,
+          status: "online",
+          chatLimit: user.chatLimit, // Assuming chatLimit is in user data
+          room: roomName,
+          profilePic: user.profilePic || "/avatars/default_avatar.png",
+        };
+        memoryUsers.set(username, newUser);
+      }
+    }
+
+    // Join the room (O(1) operation)
     socket.join(roomName);
     sendRoomList(); // Send updated room list when a user joins
 
-    // Get all socket IDs in the room
-    const roomSockets = io.sockets.adapter.rooms.get(roomName);
-    
-    if (roomSockets) {
-        // Get all usernames in the room from the database
-        const usersInRoom = await User.find({ socketID: { $in: Array.from(roomSockets) } });
-
-        // Emit from each user in the room
-        usersInRoom.forEach((roomUser) => {
-            io.to(roomName).emit("receiveMessage", {
-                text: "is connected",
-                user: roomUser.username, // Each user in the room will send their username
-                intro: true
-            });
-
-
-        });
+    // Add user to the room's memory (O(1) operation)
+    if (!memoryRooms.has(roomName)) {
+      memoryRooms.set(roomName, { users: new Set() });  // Initialize the room with an empty user set
     }
-}else{
-    // Find the user in the database
-    let user = await User.findOne({ username });
+    memoryRooms.get(roomName).users.add(username); // O(1) for Set operations
 
-    // Get all socket IDs in the room
-    const roomSockets = io.sockets.adapter.rooms.get(roomName);
-    
-    if (roomSockets) {
-        // Get all usernames in the room from the database
-        const usersInRoom = await User.find({ socketID: { $in: Array.from(roomSockets) } });
+    // Get all users in the room from memory (O(n) where n is the number of users in the room)
+    const roomData = memoryRooms.get(roomName);
+    const usersInRoom = Array.from(roomData.users)
+      .map((username) => memoryUsers.get(username)) // O(1) for Map lookup per user
+      .filter(Boolean); // Removes any undefined values (safety check)
 
-        // Emit from each user in the room
-        usersInRoom.forEach((roomUser) => {
-            io.to(roomName).emit("receiveMessage", {
-                text: "is not here",
-                user: roomUser.username, // Each user in the room will send their username
-                intro: true
-            });
+    // Emit from each user in the room (O(n) where n is the number of users)
+    usersInRoom.forEach((roomUser) => {
+      io.to(roomName).emit("receiveMessage", {
+        text: "is connected",
+        user: roomUser.username,
+        intro: true,
+      });
+    });
+  } else {
+    // Handle case when roomName is falsy (Optional)
+    let user = memoryUsers.get(username);
 
-
-        });
+    if (!user) {
+      user = await User.findOne({ username });
+      if (user) {
+        const newUser = {
+          username,
+          socketID: socket.id,
+          status: "online",
+          chatLimit: user.chatLimit,
+          room: null,
+          profilePic: user.profilePic || "/avatars/default_avatar.png",
+        };
+        memoryUsers.set(username, newUser);
+      }
     }
 
-}
-})
+    // Get all socket IDs in the room (if any) from memory
+    const roomSockets = io.sockets.adapter.rooms.get(roomName);
+    if (roomSockets) {
+      const usersInRoom = Array.from(roomSockets)
+        .map((socketID) => memoryUsers.get(socketID)) // O(1) lookup for each socketID
+        .filter(Boolean); // Safely filter out undefined users
+
+      // Emit "is not here" for each user in the room (O(n) where n is the number of users)
+      usersInRoom.forEach((roomUser) => {
+        io.to(roomName).emit("receiveMessage", {
+          text: "is not here",
+          user: roomUser.username,
+          intro: true,
+        });
+      });
+    }
+  }
+});
+
 
 
 
@@ -276,26 +338,55 @@ socket.on("sendIntroMessage", async (username, roomName) => {
 
 
 
-// Function to create a new room
 async function createNewRoom(username, socket) {
-    const randomString = generateRandomString(16);
-    let roomName = `room_${randomString + "_"+ Date.now()}`;
-    
-    let user = await User.findOne({ username });
-    if (!user) return;
+  const randomString = generateRandomString(16);
+  let roomName = `room_${randomString + "_" + Date.now()}`;
 
-    user.room = roomName;
-    await user.save();
+  // Check if user exists in the database
+  let user = await User.findOne({ username });
+  if (!user) {
+    console.log("User not found");
+    return;
+  }
 
-    let newRoom = new Room({ roomName, users: [{ _id: user._id, username: user.username, profilePic: user.profilePic }] });
+  // Update user room in memory
+  user.room = roomName;
+  memoryUsers.set(username, { ...user.toObject(), room: roomName }); // Save to memoryUsers
 
-    await newRoom.save();
+  // Create and store the room in memory
+  if (!memoryRooms.has(roomName)) {
+    memoryRooms.set(roomName, { roomName, users: new Set([username]) });  // Store room with user in memory
+  } else {
+    memoryRooms.get(roomName).users.add(username);
+  }
 
-    socket.join(roomName);
+  // Update user profile in the new room (memory-based)
+  socket.join(roomName);
 
-    console.log(`🆕 New room ${roomName} created for ${username}`);
-    socket.emit("randomConnectError", "Waiting for a partner...");
-    socket.emit("setNewRoom",roomName)
+  console.log(`🆕 New room ${roomName} created for ${username}`);
+  socket.emit("randomConnectError", "Waiting for a partner...");
+  socket.emit("setNewRoom", roomName);
+
+  // Update the database after 10 seconds delay
+  setTimeout(async () => {
+    try {
+      // Persist the room and user data to the database
+      user.room = roomName;
+      await user.save();  // Update user’s room in the database
+
+      // Create the room document in the database
+      let newRoom = new Room({
+        roomName,
+        users: [{ _id: user._id, username: user.username, profilePic: user.profilePic }]
+      });
+
+      await newRoom.save();  // Save room to the database
+
+      console.log(`Database updated: Room ${roomName} created for ${username}`);
+    } catch (error) {
+      console.error("Error saving to database:", error);
+    }
+  }, 10000);  // 10 seconds delay
 }
 
 
@@ -305,30 +396,46 @@ async function createNewRoom(username, socket) {
 
 socket.on("validateRoom", async (username, chatLimit, roomName) => {
     try {
-        let user = await User.findOne({ username });
-        let room = await Room.findOne({ roomName });
+        // Step 1: Check in memory first
+        let user = memoryUsers.get(username);
+        let roomData = memoryRooms.get(roomName);
 
-        if (!user || !room) {
-            socket.emit("roomValidationError", "Room not found.");
-            return;
+        // If user or room is not in memory, fetch from database
+        if (!user) {
+            user = await User.findOne({ username });
+            if (!user) {
+                socket.emit("roomValidationError", "User not found.");
+                return;
+            }
+            memoryUsers.set(username, { ...user.toObject(), room: null }); // Add user to memory
+        }
+
+        if (!roomData) {
+            let room = await Room.findOne({ roomName });
+            if (!room) {
+                socket.emit("roomValidationError", "Room not found.");
+                return;
+            }
+            // Add room data to memory
+            memoryRooms.set(roomName, { roomName: room.roomName, users: new Set(room.users.map(u => u.username)) });
+            roomData = memoryRooms.get(roomName);
         }
 
         console.log("Validating room for:", username);
 
-        // ✅ Check if user is already in the room (BEFORE checking if full)
-        let isUserAlreadyInRoom = room.users.some(u => u.username === username);
-        if (isUserAlreadyInRoom) {
+        // ✅ Check if user is already in the room (before checking if full)
+        if (roomData.users.has(username)) {
             socket.emit("redirectToChat", { roomName });
             return;
         }
 
         // ✅ Prevent joining if room is full
-        if (room.userLimit && room.users.length >= room.userLimit && !isUserAlreadyInRoom ) {
+        if (roomData.userLimit && roomData.users.size >= roomData.userLimit) {
             socket.emit("roomValidationError", "Room is full.");
             return;
         }
 
-         console.log("Validating Successfully for:", username);
+        console.log("Validating Successfully for:", username);
 
         // ✅ Allow joining (but no changes to userLimit)
         socket.emit("roomValidationSuccess", roomName);
@@ -349,47 +456,92 @@ socket.on("validateRoom", async (username, chatLimit, roomName) => {
 
 socket.on("joinRoom", async (username, chatLimit, roomName) => {
     try {
-        let user = await User.findOne({ username });
-        let room = await Room.findOne({ roomName });
+        // Check if user exists in memory first
+        let user = memoryUsers.get(username);
+        if (!user) {
+            // If not in memory, fetch user from database (only if necessary)
+            user = await User.findOne({ username });
+            if (!user) {
+                socket.emit("error", "User not found.");
+                return;
+            }
 
-        if (!user || !room) return;
+            // Save user to memory after fetching from DB
+            memoryUsers.set(username, { ...user.toObject(), room: null });
+        }
 
-        // ✅ Check if user is already in the room (BEFORE checking if full)
-        let isUserAlreadyInRoom = room.users.some(u => u.username === username);
-        if (isUserAlreadyInRoom) {
+        // Check if room exists in memory
+        let roomData = memoryRooms.get(roomName);
+        if (!roomData) {
+            // If room doesn't exist, fetch from DB (fallback)
+            let room = await Room.findOne({ roomName });
+            if (!room) {
+                socket.emit("error", "Room not found.");
+                return;
+            }
+
+            // Save room to memory after fetching from DB
+            memoryRooms.set(roomName, { roomName: room.roomName, users: new Set(room.users.map(u => u.username)) });
+            roomData = memoryRooms.get(roomName);
+        }
+
+        // ✅ Check if the user is already in the room
+        if (roomData.users.has(username)) {
             socket.emit("redirectToChat", { roomName });
             return;
         }
 
-        // ✅ Ensure room limit is maintained
-        if (room.userLimit && room.users.length >= room.userLimit) {
+        // ✅ Check if the room is full
+        if (roomData.userLimit && roomData.users.size >= roomData.userLimit) {
             socket.emit("roomValidationError", "Room is full.");
             return;
         }
 
-        // ✅ Ensure room settings are not modified
-        user.room = room.roomName;
-        await user.save();
+        // ✅ Memory First - Add user to memory
+        roomData.users.add(username);
+        memoryUsers.set(username, { ...user, room: roomName });
 
-        room.users.push({ _id: user._id, username: user.username, profilePic: user.profilePic, socketID: user.socketID });
-        await room.save();
+        // ✅ Join the room
+        socket.join(roomName);
 
-        socket.join(room.roomName);
-
-        // Notify existing users
-        room.users.forEach((roomUser) => {
-            io.to(roomUser.socketID).emit("userJoined", { username: user.username, room: room.roomName });
+        // ✅ Notify other users in the room
+        roomData.users.forEach((userInRoom) => {
+            let roomUser = memoryUsers.get(userInRoom);
+            if (roomUser) {
+                io.to(roomUser.socketID).emit("userJoined", { username: user.username, room: roomName });
+            }
         });
 
-        sendRoomList(); // Update the room list
+        sendRoomList(); // Update the room list for the client
 
         // ✅ Redirect the user **AFTER** everything is done
         socket.emit("redirectToChat", { roomName });
+
+        // ✅ Update the database after a short delay (e.g., 10 seconds)
+        setTimeout(async () => {
+            try {
+                // Update user room in the database
+                user.room = roomName;
+                await user.save();
+
+                // Add user to the room in the database
+                let room = await Room.findOne({ roomName });
+                if (room) {
+                    room.users.push({ _id: user._id, username: user.username, profilePic: user.profilePic, socketID: socket.id });
+                    await room.save();
+                }
+
+                console.log(`Room and user data updated in DB for ${username} in ${roomName}`);
+            } catch (error) {
+                console.error("Error saving to database:", error);
+            }
+        }, 10000);  // Delay of 10 seconds before database update
 
     } catch (error) {
         console.error("Error in joinRoom:", error);
     }
 });
+
 
 
 
@@ -418,7 +570,7 @@ socket.on("randomConnect", async (username, chatLimit) => {
     try {
         let user = await User.findOne({ username });
 
-         console.log("----------chatlimit",chatLimit == null, chatLimit, user.chatLimit === null)
+         console.log("Full chatlimit details ====>",chatLimit == null, chatLimit, user.chatLimit === null)
          let rooms = await Room.find({});
          console.log(rooms.length !== 0)
 
@@ -583,78 +735,99 @@ socket.on("randomConnect", async (username, chatLimit) => {
 socket.on("sendMessage", async (data) => {
     const { user, text, isImage, image, isEmoji, removeEmoji, imageUrl, enter } = data;
 
-    // Fetch the user and the room in a single query
+    console.log("Message received:", text);
+    console.log("Memory Users:", memoryUsers);
+    console.log("Memory Rooms:", memoryRooms);
 
-    console.log(text)
-
-
-    let userObj = await User.findOne({ username: user });
+    // Fetch user from memory
+    let userObj = memoryUsers.get(user); // Use memory cache instead of DB query
     if (!userObj || !userObj.room) {
         console.log(`User ${user} is not in a room.`);
         return;
     }
 
     const roomName = userObj.room;
-    
-    // Fetch all users in the room in a single query
-    let room = await Room.findOne({ roomName });
+
+    // Fetch room from memory
+    let room = memoryRooms.get(roomName); // Use memory cache instead of DB query
     if (!room) {
         console.log(`Room ${roomName} does not exist.`);
         return;
     }
 
-    // Get all users in the room from the User collection
-    const usersInRoom = await User.find({ 
-    username: { $in: room.users.map(user => user.username) } 
-    });
-
+    // Get all users in the room from memory cache
+    const usersInRoom = room.users; // Now usersInRoom should contain usernames like ['VVV', 'AAA']
+    console.log("Users in Room:", usersInRoom);
 
     // Send normal text/emoji messages instantly
     if (!isImage) {
-    usersInRoom.forEach((recipient) => {
-        // Send emoji/reaction to everyone, including the sender
-            io.to(recipient.socketID).emit("receiveMessage", {
-                text,
-                user,
-                isImage,
-                image,
-                isEmoji,
-                removeEmoji,
-                imageUrl,
-                enter
-            });
-        
-    });
-}
+        usersInRoom.forEach((username) => {
+            let recipient = memoryUsers.get(username); // Access user object using username
+            if (recipient) {
+                console.log(`Sending message to ${recipient.username}`);
+                io.to(recipient.socketID).emit("receiveMessage", {
+                    text,
+                    user,
+                    isImage,
+                    image,
+                    isEmoji,
+                    removeEmoji,
+                    imageUrl,
+                    enter
+                });
+            } else {
+                console.log(`User ${username} not found in memoryUsers`);
+            }
+        });
+    }
 
+    // Handle image messages with delay
     if (isImage) {
-  const placeholderData = {
-    user,
-    isImageLoading: true, // new flag for placeholder
-  };
+        const placeholderData = {
+            user,
+            isImageLoading: true, // New flag for placeholder
+        };
 
-  usersInRoom.forEach((recipient) => {
-    io.to(recipient.socketID).emit("receiveMessage", placeholderData);
-  });
+        // Send placeholder first
+        usersInRoom.forEach((username) => {
+            let recipient = memoryUsers.get(username); // Access user object using username
+            if (recipient) {
+                console.log(`Sending placeholder image to ${recipient.username}`);
+                io.to(recipient.socketID).emit("receiveMessage", placeholderData);
+            } else {
+                console.log(`User ${username} not found in memoryUsers`);
+            }
+        });
 
-  // Then send real image after delay
-  setTimeout(() => {
-    usersInRoom.forEach((recipient) => {
-      io.to(recipient.socketID).emit("receiveMessage", {
-        text,
-        user,
-        isImage,
-        image,
-        isEmoji,
-        removeEmoji,
-        imageUrl,
-        enter
-      });
-    });
-  }, 2000);
-}
-
+        // Send real image after delay
+        setTimeout(() => {
+            usersInRoom.forEach((username) => {
+                let recipient = memoryUsers.get(username); // Access user object using username
+                if (recipient) {
+                    console.log(`Sending real image to ${recipient.username}`);
+                    io.to(recipient.socketID).emit("receiveMessage", {
+                        text,
+                        user,
+                        isImage,
+                        image,
+                        isEmoji,
+                        removeEmoji,
+                        imageUrl,
+                        enter
+                    });
+                } else {
+                    console.log(`User ${username} not found in memoryUsers`);
+                }
+            });
+        }, 2000); // Adjust delay as needed
+    }
 });
+
+
+
+
+
+
 
 
 
@@ -719,24 +892,18 @@ socket.on("removeUser", async (userBio) => {
 
 
 
-
-socket.on("heartbeat", async () => {
-    console.log(`💓 Heartbeat received from ${socket.id}`);
+socket.on("heartbeat", async (roomName) => {
+    console.log(`💓 Heartbeat from ${socket.id}${roomName ? ` in room ${roomName}` : ""}`);
+    
     await User.updateOne(
-        { socketID: socket.id }, 
+        { socketID: socket.id },
         { $set: { lastActive: Date.now(), status: "online" } }
     );
-});
 
-
-
- socket.on("heartbeat", async (roomName) => {
-        if (!roomName) return;
-
-        // Update the last heartbeat time for this room
+    if (roomName) {
         roomHeartbeats[roomName] = Date.now();
-    });
-
+    }
+});
 
 
 // When a user leaves a room
@@ -770,6 +937,7 @@ socket.on("checkUser", async () => {
 
 
 });
+
 
 
 
